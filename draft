@@ -1,0 +1,1021 @@
+import React, { useState, useEffect } from 'react';
+import { Play, Pause, Square, Plus, Trash2, Clock, Settings, RotateCcw, Flag, Edit3, Check, FileText, Users, Timer } from 'lucide-react';
+
+export default function MultiSwimmingStopwatch() {
+  const [athletes, setAthletes] = useState([]);
+  const [newAthleteName, setNewAthleteName] = useState('');
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groups, setGroups] = useState([
+    { id: 1, name: 'Group A', color: 'bg-blue-500', athletes: [] }
+  ]);
+  const [programs, setPrograms] = useState([
+    { id: 1, name: '', totalSets: 1, isActive: true }
+  ]);
+  const [currentProgramIndex, setCurrentProgramIndex] = useState(0);
+  const [currentSet, setCurrentSet] = useState(1);
+  const [records, setRecords] = useState([]);
+  const [isSetupMode, setIsSetupMode] = useState(true);
+  const [activeView, setActiveView] = useState('race');
+  const [editingProgram, setEditingProgram] = useState(null);
+  
+  // Rest time features
+  const [restSettings, setRestSettings] = useState({
+    enabled: false,
+    duration: 60, // seconds
+    mode: 'team', // 'team' or 'individual'
+    autoStart: true
+  });
+  const [restTimers, setRestTimers] = useState({}); // { athleteId: timeLeft } or { groupId: timeLeft }
+  const [isRestPhase, setIsRestPhase] = useState(false);
+
+  // Timer effects
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Update athlete timers
+      setAthletes(prevAthletes => 
+        prevAthletes.map(athlete => 
+          athlete.isRunning 
+            ? { ...athlete, time: athlete.time + 1 }
+            : athlete
+        )
+      );
+
+      // Update rest timers
+      if (isRestPhase) {
+        setRestTimers(prevTimers => {
+          const newTimers = { ...prevTimers };
+          let anyTimerRunning = false;
+          
+          Object.keys(newTimers).forEach(key => {
+            if (newTimers[key] > 0) {
+              newTimers[key] -= 1;
+              anyTimerRunning = true;
+            } else if (newTimers[key] === 0) {
+              // Rest finished for this athlete/group
+              if (restSettings.mode === 'individual') {
+                handleRestFinished(key);
+              }
+              newTimers[key] = -1; // Mark as finished
+            }
+          });
+
+          // Check if all rest timers finished for team mode
+          if (restSettings.mode === 'team' && !anyTimerRunning && Object.keys(newTimers).length > 0) {
+            handleAllRestFinished();
+          }
+
+          return newTimers;
+        });
+      }
+    }, restSettings.enabled ? 100 : 10); // More frequent updates during rest
+
+    return () => clearInterval(interval);
+  }, [isRestPhase, restSettings]);
+
+  const formatTime = (centiseconds) => {
+    const totalSeconds = Math.floor(centiseconds / 100);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    const cs = centiseconds % 100;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
+  };
+
+  const formatRestTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const getCurrentProgram = () => programs[currentProgramIndex] || programs[0];
+
+  const addGroup = () => {
+    if (!newGroupName.trim()) return;
+    const colors = ['bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-red-500', 'bg-yellow-500', 'bg-indigo-500'];
+    const newGroup = {
+      id: Date.now(),
+      name: newGroupName.trim(),
+      color: colors[groups.length % colors.length],
+      athletes: []
+    };
+    setGroups([...groups, newGroup]);
+    setNewGroupName('');
+  };
+
+  const removeGroup = (groupId) => {
+    if (groups.length <= 1) {
+      alert('Minimal harus ada satu group!');
+      return;
+    }
+    // Move athletes from deleted group to first group
+    const groupToDelete = groups.find(g => g.id === groupId);
+    if (groupToDelete && groupToDelete.athletes.length > 0) {
+      const firstGroup = groups.find(g => g.id !== groupId);
+      setGroups(groups.map(g => 
+        g.id === firstGroup.id 
+          ? { ...g, athletes: [...g.athletes, ...groupToDelete.athletes] }
+          : g
+      ).filter(g => g.id !== groupId));
+      
+      setAthletes(athletes.map(athlete => 
+        groupToDelete.athletes.includes(athlete.id)
+          ? { ...athlete, groupId: firstGroup.id }
+          : athlete
+      ));
+    } else {
+      setGroups(groups.filter(g => g.id !== groupId));
+    }
+  };
+
+  const addAthlete = () => {
+    if (!newAthleteName.trim()) return;
+    const firstGroup = groups[0];
+    const newAthlete = {
+      id: Date.now(),
+      name: newAthleteName.trim(),
+      time: 0,
+      isRunning: false,
+      isFinished: false,
+      lane: athletes.length + 1,
+      groupId: firstGroup.id,
+      isResting: false
+    };
+    setAthletes([...athletes, newAthlete]);
+    setGroups(groups.map(g => 
+      g.id === firstGroup.id 
+        ? { ...g, athletes: [...g.athletes, newAthlete.id] }
+        : g
+    ));
+    setNewAthleteName('');
+  };
+
+  const removeAthlete = (id) => {
+    const athlete = athletes.find(a => a.id === id);
+    setGroups(groups.map(g => ({
+      ...g,
+      athletes: g.athletes.filter(athleteId => athleteId !== id)
+    })));
+    setAthletes(athletes.filter(athlete => athlete.id !== id).map((athlete, index) => ({
+      ...athlete,
+      lane: index + 1
+    })));
+  };
+
+  const moveAthleteToGroup = (athleteId, targetGroupId) => {
+    const athlete = athletes.find(a => a.id === athleteId);
+    if (!athlete) return;
+
+    setGroups(groups.map(g => ({
+      ...g,
+      athletes: g.id === targetGroupId 
+        ? [...g.athletes.filter(id => id !== athleteId), athleteId]
+        : g.athletes.filter(id => id !== athleteId)
+    })));
+
+    setAthletes(athletes.map(a => 
+      a.id === athleteId ? { ...a, groupId: targetGroupId } : a
+    ));
+  };
+
+  const addProgram = () => {
+    const newProgram = {
+      id: Date.now(),
+      name: '',
+      totalSets: 1,
+      isActive: true
+    };
+    setPrograms([...programs, newProgram]);
+    setEditingProgram(newProgram.id);
+  };
+
+  const removeProgram = (id) => {
+    if (programs.length <= 1) return;
+    setPrograms(programs.filter(p => p.id !== id));
+    if (currentProgramIndex >= programs.length - 1) {
+      setCurrentProgramIndex(Math.max(0, programs.length - 2));
+    }
+  };
+
+  const updateProgram = (id, field, value) => {
+    setPrograms(programs.map(p => 
+      p.id === id 
+        ? { ...p, [field]: field === 'totalSets' ? Math.max(1, parseInt(value) || 1) : value }
+        : p
+    ));
+  };
+
+  const toggleAthlete = (id) => {
+    const currentProgram = getCurrentProgram();
+    if (!currentProgram.name.trim()) {
+      alert('Mohon isi nama program terlebih dahulu!');
+      return;
+    }
+    
+    if (isRestPhase) {
+      alert('Sedang dalam fase rest. Tunggu sampai rest selesai.');
+      return;
+    }
+    
+    setAthletes(athletes.map(athlete => {
+      if (athlete.id === id) {
+        if (athlete.isRunning) {
+          return { ...athlete, isRunning: false };
+        } else if (athlete.isFinished) {
+          return { ...athlete, isRunning: true, isFinished: false, time: 0, isResting: false };
+        } else {
+          return { ...athlete, isRunning: true, isFinished: false };
+        }
+      }
+      return athlete;
+    }));
+  };
+
+  const finishAthlete = (id) => {
+    const athlete = athletes.find(a => a.id === id);
+    const currentProgram = getCurrentProgram();
+    
+    if (athlete && (athlete.isRunning || athlete.time > 0)) {
+      const group = groups.find(g => g.id === athlete.groupId);
+      const newRecord = {
+        id: Date.now() + Math.random(),
+        athleteName: athlete.name,
+        lane: athlete.lane,
+        groupName: group ? group.name : 'Unknown',
+        program: `P${currentProgramIndex + 1}: ${currentProgram.name}`,
+        setNumber: currentSet,
+        time: formatTime(athlete.time),
+        rawTime: athlete.time,
+        timestamp: new Date().toLocaleString('id-ID'),
+        programIndex: currentProgramIndex + 1
+      };
+      
+      setRecords([newRecord, ...records]);
+      
+      setAthletes(athletes.map(a => 
+        a.id === id 
+          ? { ...a, isRunning: false, isFinished: true }
+          : a
+      ));
+
+      // Check if should start rest
+      if (restSettings.enabled) {
+        checkAndStartRest(id);
+      }
+    }
+  };
+
+  const checkAndStartRest = (finishedAthleteId) => {
+    if (restSettings.mode === 'individual') {
+      // Start rest for individual athlete
+      startRestForAthlete(finishedAthleteId);
+    } else if (restSettings.mode === 'team') {
+      // Check if all athletes in the same group have finished
+      const finishedAthlete = athletes.find(a => a.id === finishedAthleteId);
+      const group = groups.find(g => g.id === finishedAthlete.groupId);
+      const groupAthletes = athletes.filter(a => a.groupId === group.id);
+      const allFinished = groupAthletes.every(a => a.isFinished || a.id === finishedAthleteId);
+      
+      if (allFinished) {
+        startRestForGroup(group.id);
+      }
+    }
+  };
+
+  const startRestForAthlete = (athleteId) => {
+    setRestTimers(prev => ({ ...prev, [athleteId]: restSettings.duration }));
+    setAthletes(athletes.map(a => 
+      a.id === athleteId ? { ...a, isResting: true } : a
+    ));
+    setIsRestPhase(true);
+  };
+
+  const startRestForGroup = (groupId) => {
+    setRestTimers(prev => ({ ...prev, [groupId]: restSettings.duration }));
+    const groupAthletes = athletes.filter(a => a.groupId === groupId);
+    setAthletes(athletes.map(a => 
+      groupAthletes.some(ga => ga.id === a.id) ? { ...a, isResting: true } : a
+    ));
+    setIsRestPhase(true);
+  };
+
+  const handleRestFinished = (athleteId) => {
+    if (restSettings.autoStart) {
+      setAthletes(athletes.map(a => 
+        a.id === parseInt(athleteId) 
+          ? { ...a, isRunning: true, isFinished: false, time: 0, isResting: false }
+          : a
+      ));
+    } else {
+      setAthletes(athletes.map(a => 
+        a.id === parseInt(athleteId) 
+          ? { ...a, isResting: false }
+          : a
+      ));
+    }
+  };
+
+  const handleAllRestFinished = () => {
+    if (restSettings.autoStart) {
+      nextSet();
+    }
+    setIsRestPhase(false);
+    setRestTimers({});
+    setAthletes(athletes.map(a => ({ ...a, isResting: false })));
+  };
+
+  const startAll = () => {
+    const currentProgram = getCurrentProgram();
+    if (!currentProgram.name.trim()) {
+      alert('Mohon isi nama program terlebih dahulu!');
+      return;
+    }
+    
+    if (isRestPhase) {
+      alert('Sedang dalam fase rest. Tunggu sampai rest selesai.');
+      return;
+    }
+    
+    setAthletes(athletes.map(athlete => ({ 
+      ...athlete, 
+      isRunning: true, 
+      isFinished: false,
+      time: 0,
+      isResting: false
+    })));
+  };
+
+  const resetAll = () => {
+    setAthletes(athletes.map(athlete => ({ 
+      ...athlete, 
+      time: 0, 
+      isRunning: false, 
+      isFinished: false,
+      isResting: false
+    })));
+    setRestTimers({});
+    setIsRestPhase(false);
+  };
+
+  const nextSet = () => {
+    const currentProgram = getCurrentProgram();
+    
+    if (currentSet < currentProgram.totalSets) {
+      setCurrentSet(currentSet + 1);
+      resetAll();
+    } else {
+      if (currentProgramIndex < programs.length - 1) {
+        setCurrentProgramIndex(currentProgramIndex + 1);
+        setCurrentSet(1);
+        resetAll();
+      } else {
+        if (window.confirm('Semua program selesai! Reset ke Program 1?')) {
+          setCurrentProgramIndex(0);
+          setCurrentSet(1);
+          resetAll();
+        }
+      }
+    }
+  };
+
+  const deleteRecord = (id) => {
+    setRecords(records.filter(record => record.id !== id));
+  };
+
+  const clearAllRecords = () => {
+    if (window.confirm('Yakin ingin menghapus semua data?')) {
+      setRecords([]);
+    }
+  };
+
+  const goToRace = () => {
+    if (athletes.length === 0) {
+      alert('Tambahkan minimal satu atlet!');
+      return;
+    }
+    
+    const hasEmptyProgram = programs.some(p => !p.name.trim());
+    if (hasEmptyProgram) {
+      alert('Mohon isi semua nama program!');
+      return;
+    }
+    
+    setIsSetupMode(false);
+  };
+
+  const getGroupedRecords = () => {
+    const grouped = {};
+    records.forEach(record => {
+      const key = `${record.program}-Set${record.setNumber}`;
+      if (!grouped[key]) {
+        grouped[key] = {
+          program: record.program,
+          setNumber: record.setNumber,
+          programIndex: record.programIndex,
+          records: []
+        };
+      }
+      grouped[key].records.push(record);
+    });
+    
+    Object.values(grouped).forEach(group => {
+      group.records.sort((a, b) => a.rawTime - b.rawTime);
+    });
+    
+    return Object.values(grouped).sort((a, b) => {
+      if (a.programIndex !== b.programIndex) {
+        return a.programIndex - b.programIndex;
+      }
+      return a.setNumber - b.setNumber;
+    });
+  };
+
+  if (isSetupMode) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">Swimming Timer Setup</h1>
+            <p className="text-gray-600">Setup Program, Group & Atlet</p>
+          </div>
+
+          <div className="grid lg:grid-cols-3 gap-6">
+            {/* Program Setup */}
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-semibold text-gray-900">Program</h2>
+                <button
+                  onClick={addProgram}
+                  className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg transition-colors"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-4 max-h-80 overflow-y-auto">
+                {programs.map((program, index) => (
+                  <div key={program.id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-8 h-8 bg-blue-600 text-white rounded-lg flex items-center justify-center font-bold text-sm">
+                        {index + 1}
+                      </div>
+                      <span className="font-medium text-gray-700">Program {index + 1}</span>
+                    </div>
+
+                    {editingProgram === program.id ? (
+                      <div className="space-y-3">
+                        <input
+                          type="text"
+                          value={program.name}
+                          onChange={(e) => updateProgram(program.id, 'name', e.target.value)}
+                          placeholder="Nama program"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                        />
+                        <div className="flex gap-2">
+                          <input
+                            type="number"
+                            value={program.totalSets}
+                            onChange={(e) => updateProgram(program.id, 'totalSets', e.target.value)}
+                            placeholder="Total set"
+                            min="1"
+                            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                          />
+                          <button
+                            onClick={() => setEditingProgram(null)}
+                            className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg transition-colors"
+                          >
+                            <Check size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-medium text-gray-900 text-sm">
+                            {program.name || 'Belum diisi'}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {program.totalSets} set
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => setEditingProgram(program.id)}
+                            className="text-gray-400 hover:text-blue-600 p-1 transition-colors"
+                          >
+                            <Edit3 size={14} />
+                          </button>
+                          {programs.length > 1 && (
+                            <button
+                              onClick={() => removeProgram(program.id)}
+                              className="text-gray-400 hover:text-red-600 p-1 transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Rest Settings */}
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <h3 className="font-medium text-gray-900 mb-4 flex items-center gap-2">
+                  <Timer size={18} />
+                  Rest Time
+                </h3>
+                
+                <div className="space-y-4">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={restSettings.enabled}
+                      onChange={(e) => setRestSettings({...restSettings, enabled: e.target.checked})}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-700">Enable Rest Timer</span>
+                  </label>
+
+                  {restSettings.enabled && (
+                    <>
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-1">Durasi (detik)</label>
+                        <input
+                          type="number"
+                          value={restSettings.duration}
+                          onChange={(e) => setRestSettings({...restSettings, duration: Math.max(1, parseInt(e.target.value) || 60)})}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                          min="1"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm text-gray-700 mb-2">Mode</label>
+                        <div className="space-y-2">
+                          <label className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name="restMode"
+                              value="individual"
+                              checked={restSettings.mode === 'individual'}
+                              onChange={(e) => setRestSettings({...restSettings, mode: e.target.value})}
+                              className="text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-700">Per Atlet</span>
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name="restMode"
+                              value="team"
+                              checked={restSettings.mode === 'team'}
+                              onChange={(e) => setRestSettings({...restSettings, mode: e.target.value})}
+                              className="text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-700">Per Group</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={restSettings.autoStart}
+                          onChange={(e) => setRestSettings({...restSettings, autoStart: e.target.checked})}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">Auto Start setelah Rest</span>
+                      </label>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Group Setup */}
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-semibold text-gray-900">Group</h2>
+                <button
+                  onClick={addGroup}
+                  className="bg-green-600 hover:bg-green-700 text-white p-2 rounded-lg transition-colors"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
+
+              <div className="flex gap-3 mb-6">
+                <input
+                  type="text"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && addGroup()}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-sm"
+                  placeholder="Nama group"
+                />
+              </div>
+
+              <div className="space-y-3 max-h-80 overflow-y-auto">
+                {groups.map((group) => {
+                  const groupAthletes = athletes.filter(a => a.groupId === group.id);
+                  return (
+                    <div key={group.id} className="border border-gray-200 rounded-lg p-4">
+                      <div className="flex justify-between items-center mb-2">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-4 h-4 ${group.color} rounded-full`}></div>
+                          <span className="font-medium text-gray-900">{group.name}</span>
+                          <span className="text-xs text-gray-500">({groupAthletes.length} atlet)</span>
+                        </div>
+                        {groups.length > 1 && (
+                          <button
+                            onClick={() => removeGroup(group.id)}
+                            className="text-gray-400 hover:text-red-600 p-1 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                      {groupAthletes.length > 0 && (
+                        <div className="text-xs text-gray-600">
+                          {groupAthletes.map(a => a.name).join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Athletes Setup */}
+            <div className="bg-white rounded-xl shadow-sm border p-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-6">Atlet</h2>
+              
+              <div className="flex gap-3 mb-6">
+                <input
+                  type="text"
+                  value={newAthleteName}
+                  onChange={(e) => setNewAthleteName(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && addAthlete()}
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                  placeholder="Nama atlet"
+                />
+                <button
+                  onClick={addAthlete}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+                >
+                  Tambah
+                </button>
+              </div>
+
+              {athletes.length > 0 && (
+                <div className="space-y-3 max-h-80 overflow-y-auto">
+                  {athletes.map((athlete) => {
+                    const athleteGroup = groups.find(g => g.id === athlete.groupId);
+                    return (
+                      <div key={athlete.id} className="border border-gray-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 bg-gray-600 text-white rounded-lg flex items-center justify-center font-bold text-sm">
+                              {athlete.lane}
+                            </div>
+                            <div>
+                              <div className="font-medium text-gray-900 text-sm">{athlete.name}</div>
+                              <div className="flex items-center gap-2">
+                                <div className={`w-3 h-3 ${athleteGroup?.color} rounded-full`}></div>
+                                <span className="text-xs text-gray-500">{athleteGroup?.name}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => removeAthlete(athlete.id)}
+                            className="text-gray-400 hover:text-red-600 p-1 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                        
+                        {/* Group selector */}
+                        <select
+                          value={athlete.groupId}
+                          onChange={(e) => moveAthleteToGroup(athlete.id, parseInt(e.target.value))}
+                          className="w-full text-xs border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500"
+                        >
+                          {groups.map(group => (
+                            <option key={group.id} value={group.id}>{group.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <button
+                onClick={goToRace}
+                disabled={athletes.length === 0 || programs.some(p => !p.name.trim())}
+                className="w-full mt-6 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-semibold transition-colors"
+              >
+                Mulai Timer ({athletes.length} atlet)
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const currentProgram = getCurrentProgram();
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="bg-white rounded-xl shadow-sm border p-6 mb-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">
+                Program {currentProgramIndex + 1}: {currentProgram.name}
+              </h1>
+              <div className="flex items-center gap-6 text-gray-600 mt-1">
+                <span>Set {currentSet} dari {currentProgram.totalSets}</span>
+                <span>{athletes.length} Atlet</span>
+                {restSettings.enabled && (
+                  <span className="flex items-center gap-1">
+                    <Timer size={16} />
+                    Rest: {formatRestTime(restSettings.duration)} ({restSettings.mode})
+                  </span>
+                )}
+                {isRestPhase && (
+                  <span className="text-orange-600 font-medium">🔄 Rest Phase Active</span>
+                )}
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setActiveView(activeView === 'race' ? 'records' : 'race')}
+                className="flex items-center gap-2 bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                {activeView === 'race' ? <FileText size={18} /> : <Flag size={18} />}
+                {activeView === 'race' ? 'Hasil' : 'Timer'}
+              </button>
+              <button
+                onClick={() => setIsSetupMode(true)}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                <Settings size={18} />
+                Setup
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {activeView === 'race' ? (
+          <>
+            {/* Global Controls */}
+            <div className="bg-white rounded-xl shadow-sm border p-6 mb-6">
+              <div className="flex justify-center gap-4">
+                <button
+                  onClick={startAll}
+                  disabled={isRestPhase}
+                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-8 py-3 rounded-lg font-semibold transition-colors"
+                >
+                  <Play size={20} />
+                  START SEMUA
+                </button>
+                <button
+                  onClick={resetAll}
+                  className="flex items-center gap-2 bg-gray-600 hover:bg-gray-700 text-white px-8 py-3 rounded-lg font-semibold transition-colors"
+                >
+                  <RotateCcw size={20} />
+                  RESET SEMUA
+                </button>
+                <button
+                  onClick={nextSet}
+                  disabled={isRestPhase}
+                  className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-8 py-3 rounded-lg font-semibold transition-colors"
+                >
+                  {currentSet < currentProgram.totalSets ? 'SET BERIKUTNYA' : 
+                   currentProgramIndex < programs.length - 1 ? 'PROGRAM BERIKUTNYA' : 'SELESAI'}
+                </button>
+              </div>
+            </div>
+
+            {/* Groups and Athletes */}
+            <div className="space-y-6">
+              {groups.map((group) => {
+                const groupAthletes = athletes.filter(a => a.groupId === group.id);
+                if (groupAthletes.length === 0) return null;
+
+                const groupRestTime = restTimers[group.id];
+                const hasGroupRest = restSettings.enabled && restSettings.mode === 'team' && groupRestTime !== undefined && groupRestTime >= 0;
+
+                return (
+                  <div key={group.id} className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                    <div className={`p-4 ${group.color} text-white flex justify-between items-center`}>
+                      <div className="flex items-center gap-3">
+                        <Users size={20} />
+                        <h3 className="text-lg font-semibold">{group.name}</h3>
+                        <span className="text-sm opacity-90">({groupAthletes.length} atlet)</span>
+                      </div>
+                      {hasGroupRest && (
+                        <div className="flex items-center gap-2 bg-white bg-opacity-20 px-3 py-1 rounded-lg">
+                          <Timer size={16} />
+                          <span className="font-mono font-bold">{formatRestTime(groupRestTime)}</span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="divide-y divide-gray-200">
+                      {groupAthletes.map((athlete) => {
+                        const athleteRestTime = restTimers[athlete.id];
+                        const hasIndividualRest = restSettings.enabled && restSettings.mode === 'individual' && athleteRestTime !== undefined && athleteRestTime >= 0;
+
+                        return (
+                          <div key={athlete.id} className="p-6 hover:bg-gray-50 transition-colors">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 bg-blue-600 text-white rounded-lg flex items-center justify-center font-bold">
+                                  {athlete.lane}
+                                </div>
+                                <div>
+                                  <h3 className="font-semibold text-lg text-gray-900">{athlete.name}</h3>
+                                  <div className="flex items-center gap-3">
+                                    <div className={`inline-block px-2 py-1 rounded-full text-xs font-medium ${
+                                      athlete.isResting ? 'bg-orange-100 text-orange-800' :
+                                      athlete.isFinished ? 'bg-green-100 text-green-800' :
+                                      athlete.isRunning ? 'bg-yellow-100 text-yellow-800' : 'bg-blue-100 text-blue-800'
+                                    }`}>
+                                      {athlete.isResting ? 'REST' :
+                                       athlete.isFinished ? 'SELESAI' : 
+                                       athlete.isRunning ? 'BERJALAN' : 'SIAP'}
+                                    </div>
+                                    {hasIndividualRest && (
+                                      <div className="flex items-center gap-1 text-orange-600">
+                                        <Timer size={14} />
+                                        <span className="font-mono text-sm font-bold">{formatRestTime(athleteRestTime)}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="text-center">
+                                <div className="text-3xl font-mono font-bold text-gray-900">
+                                  {formatTime(athlete.time)}
+                                </div>
+                              </div>
+
+                              <div className="flex gap-3">
+                                <button
+                                  onClick={() => toggleAthlete(athlete.id)}
+                                  disabled={athlete.isResting || (isRestPhase && !hasIndividualRest)}
+                                  className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+                                    athlete.isRunning 
+                                      ? 'bg-yellow-600 hover:bg-yellow-700 text-white' 
+                                      : athlete.isFinished 
+                                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                                        : 'bg-green-600 hover:bg-green-700 text-white'
+                                  } ${
+                                    athlete.isResting || (isRestPhase && !hasIndividualRest) 
+                                      ? 'opacity-50 cursor-not-allowed' : ''
+                                  }`}
+                                >
+                                  {athlete.isRunning ? 'PAUSE' : athlete.isFinished ? 'RESET' : 'START'}
+                                </button>
+                                
+                                <button
+                                  onClick={() => finishAthlete(athlete.id)}
+                                  disabled={(!athlete.isRunning && athlete.time === 0) || athlete.isResting}
+                                  className="bg-red-600 hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-medium transition-colors"
+                                >
+                                  FINISH
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          /* Records Table View */
+          <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl font-semibold text-gray-900">Hasil Latihan</h2>
+                {records.length > 0 && (
+                  <button
+                    onClick={clearAllRecords}
+                    className="text-red-600 hover:text-red-700 font-medium transition-colors"
+                  >
+                    Hapus Semua Data
+                  </button>
+                )}
+              </div>
+            </div>
+            
+            {records.length === 0 ? (
+              <div className="text-center py-12">
+                <Clock size={48} className="mx-auto text-gray-300 mb-4" />
+                <p className="text-xl text-gray-500 mb-2">Belum ada hasil waktu</p>
+                <p className="text-gray-400">Finish atlet untuk menyimpan waktu</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                {getGroupedRecords().map((group, groupIndex) => (
+                  <div key={groupIndex} className="border-b border-gray-200 last:border-b-0">
+                    {/* Group Header */}
+                    <div className="bg-gray-50 px-6 py-3 border-b border-gray-200">
+                      <h3 className="font-semibold text-gray-900">
+                        {group.program} - Set {group.setNumber}
+                      </h3>
+                    </div>
+                    
+                    {/* Table */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Rank
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Lane
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Atlet
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Group
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Waktu
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Tanggal
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Aksi
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                          {group.records.map((record, index) => (
+                            <tr key={record.id} className="hover:bg-gray-50">
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white text-sm ${
+                                  index === 0 ? 'bg-yellow-500' : 
+                                  index === 1 ? 'bg-gray-400' : 
+                                  index === 2 ? 'bg-amber-600' : 'bg-blue-500'
+                                }`}>
+                                  {index + 1}
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <div className="w-8 h-8 bg-gray-600 text-white rounded-lg flex items-center justify-center font-bold text-sm">
+                                  {record.lane}
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <div className="font-medium text-gray-900">{record.athleteName}</div>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                  {record.groupName}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <div className="text-2xl font-mono font-bold text-blue-600">
+                                  {record.time}
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                {record.timestamp}
+                              </td>
+                              <td className="px-6 py-4 whitespace-nowrap">
+                                <button
+                                  onClick={() => deleteRecord(record.id)}
+                                  className="text-red-400 hover:text-red-600 transition-colors"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
